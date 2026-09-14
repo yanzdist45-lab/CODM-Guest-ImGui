@@ -1,0 +1,71 @@
+name: Build CODM Guest ImGui
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find Android NDK
+        shell: bash
+        run: |
+          set -eux
+          NDK="$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n1)"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          test -x "$NDK/ndk-build"
+
+      - name: Fetch dependencies
+        shell: bash
+        run: |
+          set -eux
+          git clone --depth=1 https://github.com/ocornut/imgui deps/imgui
+          git clone --depth=1 https://github.com/jmpews/Dobby deps/Dobby
+          git clone --depth=1 https://github.com/topjohnwu/zygisk-module-sample deps/zygisk-sample
+          mkdir -p jni/include
+          cp deps/zygisk-sample/module/jni/zygisk.hpp jni/include/zygisk.hpp
+
+      - name: Build Dobby arm64
+        shell: bash
+        run: |
+          set -eux
+          cmake -S deps/Dobby -B build-dobby \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DDOBBY_GENERATE_SHARED=OFF \
+            -DDOBBY_DEBUG=OFF
+          cmake --build build-dobby -j2
+          find build-dobby -name 'libdobby.a' -print
+
+      - name: Build module library
+        shell: bash
+        run: |
+          set -eux
+          DOBBY_LIB="$(find build-dobby -name 'libdobby.a' | head -n1)"
+          test -f "$DOBBY_LIB"
+          cmake -S jni -B build-module \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DIMGUI_DIR="$GITHUB_WORKSPACE/deps/imgui" \
+            -DDOBBY_DIR="$GITHUB_WORKSPACE/deps/Dobby" \
+            -DDOBBY_LIB="$GITHUB_WORKSPACE/$DOBBY_LIB"
+          cmake --build build-module -j2
+
+      - name: Package Magisk module
+        shell: bash
+        run: |
+          set -eux
+          cp build-module/libcodm_guest_imgui.so module/zygisk/arm64-v8a.so
+          chmod 0755 module/action.sh module/customize.sh
+          cd module
+          zip -r ../CODM-Guest-ImGui.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CODM-Guest-ImGui
+          path: CODM-Guest-ImGui.zip

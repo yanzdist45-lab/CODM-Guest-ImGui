@@ -1,0 +1,6 @@
+id=codm_guest_imgui
+name=CODM Guest Account ImGui
+version=v1.0
+versionCode=1
+author=Yanz Cloud
+description=In-game ImGui frontend for switching CODM guest shared_prefs slots through a Zygisk root companion.
