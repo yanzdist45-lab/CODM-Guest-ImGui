@@ -56,7 +56,7 @@ jobs:
 
               data = data.replace(
                   "cdecl(common_closure_bridge_handler)@PAGE",
-                  ":pg_hi21:common_closure_bridge_handler"
+                  "common_closure_bridge_handler"
               )
 
               if data != old:
