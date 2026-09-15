@@ -1,20 +1,27 @@
 name: Build CODM Guest ImGui
+
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Find Android NDK
         shell: bash
         run: |
           set -eux
-          NDK="$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n1)"
+          NDK="$(find /usr/local/lib/android/sdk/ndk \
+            -maxdepth 1 -mindepth 1 -type d \
+            | sort -V | tail -n1)"
+
           echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
           test -x "$NDK/ndk-build"
 
@@ -23,143 +30,84 @@ jobs:
         run: |
           set -eux
 
-          rm -rf deps/imgui deps/Dobby deps/zygisk-sample
+          rm -rf deps
+          mkdir -p deps
 
-          git clone --depth=1 https://github.com/ocornut/imgui deps/imgui
-          git clone --depth=1 https://github.com/jmpews/Dobby deps/Dobby
-          git clone --depth=1 https://github.com/topjohnwu/zygisk-module-sample deps/zygisk-sample
+          git clone --depth=1 \
+            https://github.com/ocornut/imgui \
+            deps/imgui
 
-          echo "=== BEFORE PATCH ==="
-          grep -RniE '@PAGE(OFF)?' deps/Dobby || true
-
-          python3 - <<'PATCH'
-          from pathlib import Path
-
-          root = Path("deps/Dobby")
-          changed = []
-
-          for f in root.rglob("*"):
-              if not f.is_file():
-                  continue
-
-              try:
-                  data = f.read_text()
-              except (UnicodeDecodeError, OSError):
-                  continue
-
-              old = data
-
-              data = data.replace(
-                  "cdecl(common_closure_bridge_handler)@PAGEOFF",
-                  ":lo12:common_closure_bridge_handler"
-              )
-
-              data = data.replace(
-                  "cdecl(common_closure_bridge_handler)@PAGE",
-                  "common_closure_bridge_handler"
-              )
-
-              if data != old:
-                  f.write_text(data)
-                  changed.append(str(f))
-
-          print("patched files:")
-          for f in changed:
-              print("  ", f)
-
-          if not changed:
-              raise SystemExit("ERROR: no Dobby relocation source patched")
-          PATCH
-
-          echo "=== PATCH DOBBY API MISMATCH ==="
-
-          python3 - <<'DOBBYFIX'
-          from pathlib import Path
-
-          root = Path("deps/Dobby")
-
-          for f in root.rglob("*"):
-              if not f.is_file():
-                  continue
-
-              try:
-                  text = f.read_text()
-              except (UnicodeDecodeError, OSError):
-                  continue
-
-              old = text
-
-              # RuntimeModule API changed: load_address -> base
-              text = text.replace(".load_address", ".base")
-
-              # MemRange API changed: fields -> accessors
-              if f.name == "ProcessRuntime.cc":
-                  text = text.replace("a.start < b.start", "a.start() < b.start()")
-
-              if text != old:
-                  f.write_text(text)
-                  print("patched:", f)
-          DOBBYFIX
-
-          echo "=== VERIFY DOBBY API PATCH ==="
-
-          if grep -Rns '\.load_address' deps/Dobby/source deps/Dobby/builtin-plugin; then
-            echo "ERROR: stale RuntimeModule.load_address remains"
-            exit 1
-          fi
-
-          echo "=== AFTER PATCH ==="
-          grep -RniE '@PAGE(OFF)?' deps/Dobby || true
-
-          if grep -RqsE 'common_closure_bridge_handler@PAGE(OFF)?' deps/Dobby; then
-            echo "ERROR: Mach-O relocation still exists"
-            exit 1
-          fi
-
-          echo "=== PATCHED HANDLER ==="
-          grep -Rni 'common_closure_bridge_handler' deps/Dobby
+          git clone --depth=1 \
+            https://github.com/topjohnwu/zygisk-module-sample \
+            deps/zygisk-sample
 
           mkdir -p jni/include
-          cp deps/zygisk-sample/module/jni/zygisk.hpp jni/include/zygisk.hpp
 
-      - name: Build Dobby arm64
+          cp \
+            deps/zygisk-sample/module/jni/zygisk.hpp \
+            jni/include/zygisk.hpp
+
+          test -f jni/include/dobby.h
+          test -f jni/libs/arm64-v8a/libdobby.a
+          test -f jni/include/zygisk.hpp
+
+          ls -lh \
+            jni/include/dobby.h \
+            jni/include/zygisk.hpp \
+            jni/libs/arm64-v8a/libdobby.a
+
+      - name: Build module
         shell: bash
         run: |
           set -eux
-          cmake -S deps/Dobby -B build-dobby \
+
+          rm -rf build
+
+          cmake \
+            -S jni \
+            -B build \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
-            -DDOBBY_GENERATE_SHARED=OFF \
-            -DDOBBY_DEBUG=OFF
-          cmake --build build-dobby -j2
-          find build-dobby -name 'libdobby.a' -print
+            -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build module library
+          cmake --build build -j2
+
+      - name: Find output
         shell: bash
         run: |
           set -eux
-          DOBBY_LIB="$(find build-dobby -name 'libdobby.a' | head -n1)"
-          test -f "$DOBBY_LIB"
-          cmake -S jni -B build-module \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DIMGUI_DIR="$GITHUB_WORKSPACE/deps/imgui" \
-            -DDOBBY_DIR="$GITHUB_WORKSPACE/deps/Dobby" \
-            -DDOBBY_LIB="$GITHUB_WORKSPACE/$DOBBY_LIB"
-          cmake --build build-module -j2
 
-      - name: Package Magisk module
+          find build -type f \
+            \( -name '*.so' -o -name '*.a' \) \
+            -print
+
+          SO="$(find build -type f \
+            -name 'libcodm_guest_imgui.so' \
+            | head -n1)"
+
+          test -n "$SO"
+          test -f "$SO"
+
+          mkdir -p module/zygisk
+
+          cp "$SO" module/zygisk/arm64-v8a.so
+
+          ls -lh module/zygisk/arm64-v8a.so
+
+      - name: Package module
         shell: bash
         run: |
           set -eux
-          cp build-module/libcodm_guest_imgui.so module/zygisk/arm64-v8a.so
-          chmod 0755 module/action.sh module/customize.sh
+
           cd module
           zip -r ../CODM-Guest-ImGui.zip .
+          cd ..
 
-      - uses: actions/upload-artifact@v4
+          unzip -l CODM-Guest-ImGui.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
           name: CODM-Guest-ImGui
           path: CODM-Guest-ImGui.zip
