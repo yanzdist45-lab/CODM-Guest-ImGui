@@ -25,6 +25,17 @@ jobs:
           git clone --depth=1 https://github.com/ocornut/imgui deps/imgui
           git clone --depth=1 https://github.com/jmpews/Dobby deps/Dobby
           git clone --depth=1 https://github.com/topjohnwu/zygisk-module-sample deps/zygisk-sample
+
+          # Dobby master currently contains Mach-O style ARM64 relocations in
+          # closure_bridge_arm64.asm. Android/ELF clang requires ELF relocations.
+          DOBBY_ASM="deps/Dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm"
+          test -f "$DOBBY_ASM"
+          sed -i \
+            -e 's/common_closure_bridge_handler@PAGEOFF/:lo12:common_closure_bridge_handler/g' \
+            -e 's/common_closure_bridge_handler@PAGE/:pg_hi21:common_closure_bridge_handler/g' \
+            "$DOBBY_ASM"
+          grep -n 'common_closure_bridge_handler' "$DOBBY_ASM"
+
           mkdir -p jni/include
           cp deps/zygisk-sample/module/jni/zygisk.hpp jni/include/zygisk.hpp
 
