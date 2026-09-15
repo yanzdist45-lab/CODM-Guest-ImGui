@@ -71,6 +71,43 @@ jobs:
               raise SystemExit("ERROR: no Dobby relocation source patched")
           PATCH
 
+          echo "=== PATCH DOBBY API MISMATCH ==="
+
+          python3 - <<'DOBBYFIX'
+          from pathlib import Path
+
+          root = Path("deps/Dobby")
+
+          for f in root.rglob("*"):
+              if not f.is_file():
+                  continue
+
+              try:
+                  text = f.read_text()
+              except (UnicodeDecodeError, OSError):
+                  continue
+
+              old = text
+
+              # RuntimeModule API changed: load_address -> base
+              text = text.replace(".load_address", ".base")
+
+              # MemRange API changed: fields -> accessors
+              if f.name == "ProcessRuntime.cc":
+                  text = text.replace("a.start < b.start", "a.start() < b.start()")
+
+              if text != old:
+                  f.write_text(text)
+                  print("patched:", f)
+          DOBBYFIX
+
+          echo "=== VERIFY DOBBY API PATCH ==="
+
+          if grep -Rns '\.load_address' deps/Dobby/source deps/Dobby/builtin-plugin; then
+            echo "ERROR: stale RuntimeModule.load_address remains"
+            exit 1
+          fi
+
           echo "=== AFTER PATCH ==="
           grep -RniE '@PAGE(OFF)?' deps/Dobby || true
 
