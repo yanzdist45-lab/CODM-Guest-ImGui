@@ -1,3 +1,4 @@
+#include <sys/types.h>
 #include <zygisk.hpp>
 #include <android/input.h>
 #include <android/log.h>
@@ -49,15 +50,26 @@ static std::string slot_path(uint32_t slot) {
 
 static void companion_handler(int fd) {
     Request r{};
+
     ssize_t n = read(fd, &r, sizeof(r));
-    if (n != sizeof(r) || r.magic != MAGIC || r.slot < 1 || r.slot > 8) return;
+    if (n != sizeof(r) ||
+        r.magic != MAGIC ||
+        r.slot < 1 ||
+        r.slot > 8) {
+        return;
+    }
 
     const std::string slot = slot_path(r.slot);
+    const std::string app = APP_BASE;
+    const std::string target = TARGET;
+
     if (r.cmd == Cmd::SAVE) {
         std::string cmd =
             "mkdir -p '" + slot + "' && "
             "rm -rf '" + slot + "/shared_prefs' && "
-            "cp -a '" APP_BASE "/shared_prefs' '" + slot + "/shared_prefs'";
+            "cp -a '" + app + "/shared_prefs' '" +
+            slot + "/shared_prefs'";
+
         run_sh(cmd);
         return;
     }
@@ -68,18 +80,41 @@ static void companion_handler(int fd) {
     }
 
     if (r.cmd == Cmd::SWITCH) {
-        if (access((slot + "/shared_prefs").c_str(), F_OK) != 0) return;
-        // All work stays in the root companion, so killing the game cannot interrupt the copy.
+        if (access(
+                (slot + "/shared_prefs").c_str(),
+                F_OK) != 0) {
+            return;
+        }
+
+        // Root companion continues running after CODM is stopped.
         std::string cmd =
-            "am force-stop " TARGET "; "
+            "am force-stop " + target + "; "
             "sleep 1; "
-            "rm -rf '" APP_BASE "/shared_prefs'; "
-            "cp -a '" + slot + "/shared_prefs' '" APP_BASE "/shared_prefs'; "
-            "UID=$(dumpsys package " TARGET " | grep -m1 -E 'uid=|userId=' | sed -E 's/.*(uid|userId)=([0-9]+).*/\\2/'); "
-            "[ -n \"$UID\" ] && chown -R $UID:$UID '" APP_BASE "/shared_prefs'; "
-            "restorecon -RF '" APP_BASE "/shared_prefs' >/dev/null 2>&1; "
+
+            "rm -rf '" + app + "/shared_prefs'; "
+
+            "cp -a '" + slot +
+            "/shared_prefs' '" +
+            app + "/shared_prefs'; "
+
+            "APPUID=$(dumpsys package " + target +
+            " | grep -m1 -E 'uid=|userId=' "
+            "| sed -E 's/.*(uid|userId)=([0-9]+).*/\\2/'); "
+
+            "[ -n \"$APPUID\" ] && "
+            "chown -R $APPUID:$APPUID '" +
+            app + "/shared_prefs'; "
+
+            "restorecon -RF '" +
+            app +
+            "/shared_prefs' >/dev/null 2>&1; "
+
             "sleep 1; "
-            "monkey -p " TARGET " -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1";
+
+            "monkey -p " + target +
+            " -c android.intent.category.LAUNCHER "
+            "1 >/dev/null 2>&1";
+
         run_sh(cmd);
     }
 }
@@ -164,12 +199,20 @@ static void install_hooks() {
     void *swap = egl ? dlsym(egl, "eglSwapBuffers") : nullptr;
     void *getev = android ? dlsym(android, "AInputQueue_getEvent") : nullptr;
 
-    if (swap && DobbyHook(swap, (void*)hook_swap, (void**)&old_swap) == RS_SUCCESS)
+    if (swap && DobbyHook(
+        swap,
+        reinterpret_cast<dobby_dummy_func_t>(hook_swap),
+        reinterpret_cast<dobby_dummy_func_t *>(&old_swap)
+    ) == RS_SUCCESS)
         LOGI("eglSwapBuffers hooked");
     else
         LOGE("eglSwapBuffers hook failed");
 
-    if (getev && DobbyHook(getev, (void*)hook_get_event, (void**)&old_get_event) == RS_SUCCESS)
+    if (getev && DobbyHook(
+        getev,
+        reinterpret_cast<dobby_dummy_func_t>(hook_get_event),
+        reinterpret_cast<dobby_dummy_func_t *>(&old_get_event)
+    ) == RS_SUCCESS)
         LOGI("AInputQueue_getEvent hooked");
     else
         LOGE("input hook failed");
