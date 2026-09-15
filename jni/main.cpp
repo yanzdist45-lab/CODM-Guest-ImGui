@@ -146,8 +146,8 @@ static EGLBoolean hook_swap(EGLDisplay dpy, EGLSurface surface) {
 
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)w, (float)h);
-    io.MousePos = ImVec2(g_x.load(), g_y.load());
-    io.MouseDown[0] = g_down.load();
+    io.AddMousePosEvent(g_x.load(), g_y.load());
+    io.AddMouseButtonEvent(0, g_down.load());
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
@@ -179,43 +179,117 @@ static EGLBoolean hook_swap(EGLDisplay dpy, EGLSurface surface) {
     return old_swap(dpy, surface);
 }
 
-using GetEventFn = int(*)(AInputQueue*, AInputEvent**);
-static GetEventFn old_get_event = nullptr;
-static int hook_get_event(AInputQueue *q, AInputEvent **event) {
-    int rc = old_get_event(q, event);
-    if (rc >= 0 && event && *event && AInputEvent_getType(*event) == AINPUT_EVENT_TYPE_MOTION) {
-        int action = AMotionEvent_getAction(*event) & AMOTION_EVENT_ACTION_MASK;
-        g_x.store(AMotionEvent_getX(*event, 0));
-        g_y.store(AMotionEvent_getY(*event, 0));
-        if (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_MOVE) g_down.store(true);
-        if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_CANCEL) g_down.store(false);
+
+using MotionGetXFn = float(*)(const AInputEvent*, size_t);
+using MotionGetYFn = float(*)(const AInputEvent*, size_t);
+using MotionGetActionFn = int32_t(*)(const AInputEvent*);
+
+static MotionGetXFn old_motion_x = nullptr;
+static MotionGetYFn old_motion_y = nullptr;
+static MotionGetActionFn old_motion_action = nullptr;
+
+static float hook_motion_x(const AInputEvent *event, size_t pointer_index) {
+    float x = old_motion_x(event, pointer_index);
+
+    if (pointer_index == 0) {
+        g_x.store(x);
     }
-    return rc;
+
+    return x;
+}
+
+static float hook_motion_y(const AInputEvent *event, size_t pointer_index) {
+    float y = old_motion_y(event, pointer_index);
+
+    if (pointer_index == 0) {
+        g_y.store(y);
+    }
+
+    return y;
+}
+
+static int32_t hook_motion_action(const AInputEvent *event) {
+    int32_t action = old_motion_action(event);
+    int32_t masked = action & AMOTION_EVENT_ACTION_MASK;
+
+    if (masked == AMOTION_EVENT_ACTION_DOWN ||
+        masked == AMOTION_EVENT_ACTION_POINTER_DOWN ||
+        masked == AMOTION_EVENT_ACTION_MOVE) {
+        g_down.store(true);
+    }
+
+    if (masked == AMOTION_EVENT_ACTION_UP ||
+        masked == AMOTION_EVENT_ACTION_POINTER_UP ||
+        masked == AMOTION_EVENT_ACTION_CANCEL) {
+        g_down.store(false);
+    }
+
+    return action;
 }
 
 static void install_hooks() {
     void *egl = dlopen("libEGL.so", RTLD_NOW);
     void *android = dlopen("libandroid.so", RTLD_NOW);
-    void *swap = egl ? dlsym(egl, "eglSwapBuffers") : nullptr;
-    void *getev = android ? dlsym(android, "AInputQueue_getEvent") : nullptr;
 
-    if (swap && DobbyHook(
-        swap,
-        reinterpret_cast<dobby_dummy_func_t>(hook_swap),
-        reinterpret_cast<dobby_dummy_func_t *>(&old_swap)
-    ) == RS_SUCCESS)
+    void *swap = egl
+        ? dlsym(egl, "eglSwapBuffers")
+        : nullptr;
+
+    void *motion_x = android
+        ? dlsym(android, "AMotionEvent_getX")
+        : nullptr;
+
+    void *motion_y = android
+        ? dlsym(android, "AMotionEvent_getY")
+        : nullptr;
+
+    void *motion_action = android
+        ? dlsym(android, "AMotionEvent_getAction")
+        : nullptr;
+
+    if (swap &&
+        DobbyHook(
+            swap,
+            reinterpret_cast<dobby_dummy_func_t>(hook_swap),
+            reinterpret_cast<dobby_dummy_func_t *>(&old_swap)
+        ) == 0) {
         LOGI("eglSwapBuffers hooked");
-    else
+    } else {
         LOGE("eglSwapBuffers hook failed");
+    }
 
-    if (getev && DobbyHook(
-        getev,
-        reinterpret_cast<dobby_dummy_func_t>(hook_get_event),
-        reinterpret_cast<dobby_dummy_func_t *>(&old_get_event)
-    ) == RS_SUCCESS)
-        LOGI("AInputQueue_getEvent hooked");
-    else
-        LOGE("input hook failed");
+    if (motion_x &&
+        DobbyHook(
+            motion_x,
+            reinterpret_cast<dobby_dummy_func_t>(hook_motion_x),
+            reinterpret_cast<dobby_dummy_func_t *>(&old_motion_x)
+        ) == 0) {
+        LOGI("AMotionEvent_getX hooked");
+    } else {
+        LOGE("AMotionEvent_getX hook failed");
+    }
+
+    if (motion_y &&
+        DobbyHook(
+            motion_y,
+            reinterpret_cast<dobby_dummy_func_t>(hook_motion_y),
+            reinterpret_cast<dobby_dummy_func_t *>(&old_motion_y)
+        ) == 0) {
+        LOGI("AMotionEvent_getY hooked");
+    } else {
+        LOGE("AMotionEvent_getY hook failed");
+    }
+
+    if (motion_action &&
+        DobbyHook(
+            motion_action,
+            reinterpret_cast<dobby_dummy_func_t>(hook_motion_action),
+            reinterpret_cast<dobby_dummy_func_t *>(&old_motion_action)
+        ) == 0) {
+        LOGI("AMotionEvent_getAction hooked");
+    } else {
+        LOGE("AMotionEvent_getAction hook failed");
+    }
 }
 
 // Keep a single module instance and cache JNIEnv for package filtering.
