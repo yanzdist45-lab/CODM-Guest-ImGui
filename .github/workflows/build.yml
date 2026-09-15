@@ -50,12 +50,12 @@ jobs:
               old = data
 
               data = data.replace(
-                  "common_closure_bridge_handler@PAGEOFF",
+                  "cdecl(common_closure_bridge_handler)@PAGEOFF",
                   ":lo12:common_closure_bridge_handler"
               )
 
               data = data.replace(
-                  "common_closure_bridge_handler@PAGE",
+                  "cdecl(common_closure_bridge_handler)@PAGE",
                   ":pg_hi21:common_closure_bridge_handler"
               )
 
